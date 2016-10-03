@@ -1,0 +1,406 @@
+package com.example.renan.verificador;
+
+import android.Manifest;
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.app.Dialog;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.net.Uri;
+import android.os.CountDownTimer;
+import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PersistableBundle;
+import android.provider.MediaStore;
+import android.provider.SyncStateContract;
+import android.support.v4.app.ActivityCompat;
+import android.support.v7.app.AppCompatActivity;
+import android.os.Bundle;
+import android.util.Log;
+import android.view.View;
+import android.widget.ImageView;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import com.example.renan.verificador.ui.CameraSourcePreview;
+import com.example.renan.verificador.ui.GraphicOverlay;
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.GoogleApiAvailability;
+import com.google.android.gms.vision.CameraSource;
+import com.google.android.gms.vision.MultiProcessor;
+import com.google.android.gms.vision.Tracker;
+import com.google.android.gms.vision.face.Face;
+import com.google.android.gms.vision.face.FaceDetector;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+
+public class CameraActivity extends AppCompatActivity {
+
+    private static final String TAG = "FaceTracker";
+    //Manda frames para o detector
+    private CameraSource mCameraSource = null;
+
+    private CameraSourcePreview mPreview;
+    private GraphicOverlay mGraphicOverlay;
+
+    private static final int RC_HANDLE_GMS = 9001;
+    // permission request codes need to be < 256
+    private static final int RC_HANDLE_CAMERA_PERM = 2;
+
+    private boolean IdIsSet = false;
+
+    private int mFaceId = -1;
+
+    private int onResumCount = -2;
+
+    CountDownTimer cdt;
+
+    ImageView imagem1;
+    ImageView imagem2;
+    Bitmap mBitmap0;
+    Bitmap mBitmap1;
+    TextView txtView;
+
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_camera);
+
+        mPreview = (CameraSourcePreview) findViewById(R.id.preview);
+        mGraphicOverlay = (GraphicOverlay) findViewById(R.id.faceOverlay);
+
+
+        // Check for the camera permission before accessing the camera.  If the
+        // permission is not granted yet, request permission.
+        int rc = ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA);
+        if (rc == PackageManager.PERMISSION_GRANTED) {
+            createCameraSource();
+        } else {
+            requestCameraPermission();
+        }
+
+
+    }
+
+    private void requestCameraPermission() {
+        Log.w(TAG, "Camera permission is not granted. Requesting permission");
+
+        final String[] permissions = new String[]{Manifest.permission.CAMERA};
+
+        if (!ActivityCompat.shouldShowRequestPermissionRationale(this,
+                Manifest.permission.CAMERA)) {
+            ActivityCompat.requestPermissions(this, permissions, RC_HANDLE_CAMERA_PERM);
+            return;
+        }
+
+        final Activity thisActivity = this;
+
+        View.OnClickListener listener = new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                ActivityCompat.requestPermissions(thisActivity, permissions,
+                        RC_HANDLE_CAMERA_PERM);
+            }
+        };
+
+
+
+    }
+
+    private void createCameraSource() {
+
+        Context context = getApplicationContext();
+        FaceDetector detector = new FaceDetector.Builder(context)
+                .setClassificationType(FaceDetector.ALL_CLASSIFICATIONS)
+                .build();
+
+        detector.setProcessor(
+                new MultiProcessor.Builder<>(new GraphicFaceTrackerFactory())
+                        .build());
+
+        if (!detector.isOperational()) {
+
+            Log.w(TAG, "Dependências do Face detector não estão disponíveis ainda.");
+        }
+
+        mCameraSource = new CameraSource.Builder(context, detector)
+                .setRequestedPreviewSize(640, 480)
+                .setFacing(CameraSource.CAMERA_FACING_FRONT)
+                .setRequestedFps(30.0f)
+                .build();
+
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        startCameraSource();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        mPreview.stop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (mCameraSource != null) {
+            mCameraSource.release();
+        }
+    }
+
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (requestCode != RC_HANDLE_CAMERA_PERM) {
+            Log.d(TAG, "Got unexpected permission result: " + requestCode);
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+            return;
+        }
+
+        if (grantResults.length != 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            Log.d(TAG, "Camera permission granted - initialize the camera source");
+            // we have permission, so create the camerasource
+            createCameraSource();
+            return;
+        }
+
+        Log.e(TAG, "Permission not granted: results len = " + grantResults.length +
+                " Result code = " + (grantResults.length > 0 ? grantResults[0] : "(empty)"));
+
+        DialogInterface.OnClickListener listener = new DialogInterface.OnClickListener() {
+            public void onClick(DialogInterface dialog, int id) {
+                finish();
+            }
+        };
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Face Tracker sample")
+                .setMessage(R.string.no_camera_permission)
+                .setPositiveButton(R.string.ok, listener)
+                .show();
+    }
+
+    private void startCameraSource() {
+
+        // check that the device has play services available.
+        int code = GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(
+                getApplicationContext());
+        if (code != ConnectionResult.SUCCESS) {
+            Dialog dlg =
+                    GoogleApiAvailability.getInstance().getErrorDialog(this, code, RC_HANDLE_GMS);
+            dlg.show();
+        }
+
+        if (mCameraSource != null) {
+            try {
+                mPreview.start(mCameraSource, mGraphicOverlay);
+            } catch (IOException e) {
+                Log.e(TAG, "Unable to start camera source.", e);
+                mCameraSource.release();
+                mCameraSource = null;
+            }
+        }
+    }
+    private class GraphicFaceTrackerFactory implements MultiProcessor.Factory<Face> {
+        @Override
+        public Tracker<Face> create(Face face) {
+            return new GraphicFaceTracker(mGraphicOverlay);
+        }
+    }
+
+    private class GraphicFaceTracker extends Tracker<Face> {
+        private GraphicOverlay mOverlay;
+        private FaceGraphic mFaceGraphic;
+
+        GraphicFaceTracker(GraphicOverlay overlay) {
+            mOverlay = overlay;
+            mFaceGraphic = new FaceGraphic(overlay);
+        }
+
+        /**
+         * Start tracking the detected face instance within the face overlay.
+         */
+        @Override
+        public void onNewItem(int faceId, Face item) {
+            Log.i("FaceId", String.valueOf(faceId) + "Value IdisSet: " + String.valueOf(IdIsSet));
+            mFaceGraphic.setId(faceId);
+            IdIsSet = true;
+            Log.i("FaceId","Value IdisSet: " + String.valueOf(IdIsSet));
+            mFaceId = faceId;
+            onResumCount = 0;
+
+        }
+
+        /**
+         * Update the position/characteristics of the face within the overlay.
+         */
+        @Override
+        public void onUpdate(FaceDetector.Detections<Face> detectionResults, Face face) {
+            mOverlay.add(mFaceGraphic);
+            mFaceGraphic.updateFace(face);
+
+        }
+
+        /**
+         * Hide the graphic when the corresponding face was not detected.  This can happen for
+         * intermediate frames temporarily (e.g., if the face was momentarily blocked from
+         * view).
+         */
+        @Override
+        public void onMissing(FaceDetector.Detections<Face> detectionResults) {
+            mOverlay.remove(mFaceGraphic);
+            IdIsSet = false;
+            onResumCount = -1;
+
+
+        }
+
+        /**
+         * Called when the face is assumed to be gone for good. Remove the graphic annotation from
+         * the overlay.
+         */
+        @Override
+        public void onDone() {
+            mOverlay.remove(mFaceGraphic);
+
+        }
+    }
+    private String myLocalFilePath;
+    private File storageDir;
+    private static final int REQUEST_TAKE_PHOTO = 0;
+    private Uri mUriPhotoTaken;
+    private int idDeViews;
+    int testador=0;
+    //Método usado para tirar foto. O último foi removido pois estava errado. A Câmera criava outra
+    //instância dela mesma e por este motivo havia duas activities. Esta é a forma correta de se
+    //tirar uma foto quando se manipula o hardware da câmera.
+
+    private CameraSource.PictureCallback pictureCallback = new CameraSource.PictureCallback() {
+
+        @Override
+        public void onPictureTaken(byte[] bytes) {
+            File pictureFileDir = getDir();
+            if(!pictureFileDir.exists()){
+                pictureFileDir.mkdir();
+            }
+
+            /*if (!pictureFileDir.exists() && !pictureFileDir.mkdirs()) {
+
+
+                return;
+
+            }*/
+            SimpleDateFormat dateFormat = new SimpleDateFormat("yyyymmddhhmmss");
+            String date = dateFormat.format(new Date());
+            String photoFile = "Picture_" + date + ".png";//mudado para png
+
+            myLocalFilePath = pictureFileDir.getPath()+File.separator+photoFile;
+            //String filename = pictureFileDir.getPath() + File.separator + photoFile;
+
+            File pictureFile = new File(myLocalFilePath);
+            //Adicionado para testar se esta parte do codigo estava dando problema.
+            try {
+                //BitmapFactory.decodeByteArray(bytes,0,bytes.length);
+                testador++;
+                FileOutputStream fos = new FileOutputStream(pictureFile);
+                testador++;
+                fos.write(bytes);
+                testador++;
+                fos.close();
+
+            } catch (Exception error) {
+                Intent intent = new Intent(CameraActivity.this, LogActiviyActivity.class);
+                String log = error.toString()+", "+CameraActivity.this.getClass().getSimpleName();
+                intent.putExtra("error", log);
+                startActivity(intent);
+            }
+
+
+                /*Intent intentBackToMainActivity = new Intent(CameraActivity.this, MainActivity.class);
+                intentBackToMainActivity.putExtra("path", myLocalFilePath+",testador"+testador);
+                startActivity(intentBackToMainActivity);
+                finish();*/
+
+
+        }
+    };
+
+    private File getDir() {
+
+        File sdDir = Environment
+                .getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
+        return new File(sdDir, "CameraAPIDemo");
+    }
+
+    public void tirarFoto(View view){
+
+            mCameraSource.takePicture(null,pictureCallback);
+
+
+
+        /*Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        if(intent.resolveActivity(getPackageManager()) != null) {
+            // Save the photo taken to a temporary file.
+            *//*Intent cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            if(cameraIntent.resolveActivity(getPackageManager())!=null){
+                myLocalFilePath = getExternalFilesDir(null)+"/"+System.currentTimeMillis()+".jpg";
+                File file = null;
+                file = new File(myLocalFilePath);
+                mUriPhotoTaken = Uri.fromFile(file);
+
+                cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, mUriPhotoTaken);
+                startActivityForResult(cameraIntent, REQUEST_TAKE_PHOTO);
+*//*
+            *//*storageDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+            try {
+                File file = File.createTempFile("IMG_", ".jpg", storageDir);
+                mUriPhotoTaken = Uri.fromFile(file);
+                intent.putExtra(MediaStore.EXTRA_OUTPUT, mUriPhotoTaken);
+                startActivityForResult(intent, REQUEST_TAKE_PHOTO);
+            } catch (IOException e) {
+                Toast.makeText(getBaseContext(),"Erro ao tirar a foto",Toast.LENGTH_LONG).show();
+            }*//*
+            }
+        }*/
+
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+
+        if(requestCode == REQUEST_TAKE_PHOTO && resultCode == RESULT_OK){
+
+            /*Bitmap imagemFoto = BitmapFactory.decodeFile(myLocalFilePath);
+            Bitmap imagemFotoReduzida = Bitmap.createScaledBitmap(imagemFoto,288,512,true);
+
+            Intent intent = new Intent(this, MainActivity.class);
+            intent.putExtra("path",myLocalFilePath);
+            startActivity(intent);
+            finish();*/
+        }
+
+    }
+
+    @Override
+    public void onSaveInstanceState(Bundle outState, PersistableBundle outPersistentState) {
+        super.onSaveInstanceState(outState, outPersistentState);
+    }
+
+    @Override
+    protected void onRestoreInstanceState(Bundle savedInstanceState) {
+        super.onRestoreInstanceState(savedInstanceState);
+    }
+}
